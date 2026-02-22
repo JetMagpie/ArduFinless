@@ -1,5 +1,6 @@
 #include "PWM_IO.h"
 #include <avr/interrupt.h>
+#include <util/atomic.h>
 
 // 初始化静态实例指针
 PWM_IO* PWM_IO::instance = nullptr;
@@ -309,19 +310,35 @@ void PWM_IO::checkTimeouts() {
 
 // 获取输入PWM宽度
 uint16_t PWM_IO::getCH1_IN() const {
-    return ch1_pulse_width;
+    uint16_t val;
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+        val = ch1_pulse_width;
+    }
+    return val;
 }
 
 uint16_t PWM_IO::getCH2_IN() const {
-    return ch2_pulse_width;
+    uint16_t val;
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+        val = ch2_pulse_width;
+    }
+    return val;
 }
 
 uint16_t PWM_IO::getCH3_IN() const {
-    return ch3_pulse_width;
+    uint16_t val;
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+    val = ch3_pulse_width;
+    }
+    return val;
 }
 
 uint16_t PWM_IO::getCH4_IN() const {
-    return ch4_pulse_width;
+    uint16_t val;
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+        val = ch4_pulse_width;
+    }
+    return val;
 }
 
 // 检查输入是否有效
