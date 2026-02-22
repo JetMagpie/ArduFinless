@@ -1,5 +1,5 @@
 # ArduFinless
-An arduino based finless flywing project, includes sideslip angle detection and drag rudder control law design.
+An arduino based finless flying wing project, includes sideslip angle detection and drag rudder control law design.
 
 ![flight](./flight.png)
 
