@@ -216,7 +216,8 @@ void loop() {
   float Brake = brake_filter.update(Brake_raw);
   
   // 计算输出值
-  float OUT_right = 0.0f, OUT_left = 0.0f;
+  static float OUT_right = 0.0f;
+  static float OUT_left = 0.0f;
   calculateOutputs(Yaw, Brake, Beta, Yaw_Rate, 
                   Yaw_gain, Cn_beta, Cn_damper,
                   OUT_right, OUT_left);
@@ -295,9 +296,9 @@ void calculateOutputs(float Yaw, float Brake, float Beta, float Yaw_Rate,
   float control_clamped = constrain(control_term, -1.0f, 1.0f);
   
   float brake_clamped = constrain(Brake, 0.0f, 1.0f);
-  
-  OUT_left = constrain(-control_clamped + brake_clamped, 0.0f, 1.0f);
+
   OUT_right = constrain(control_clamped + brake_clamped, 0.0f, 1.0f);
+  OUT_left = constrain(-control_clamped + brake_clamped, 0.0f, 1.0f);
 }
 
 void setPWMOutputs(float OUT_right, float OUT_left,
