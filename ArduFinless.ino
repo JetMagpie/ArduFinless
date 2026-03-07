@@ -34,22 +34,23 @@ float beta_cutoff_freq = 50.0f;        // 角度截止频率 (Hz)
 float gyro_cutoff_freq = 50.0f;        // 角速度截止频率 (Hz)
 float yaw_cutoff_freq = 80.0f;         // Yaw输入截止频率 (Hz)
 float brake_cutoff_freq = 80.0f;       // Brake输入截止频率 (Hz)
+float accel_cutoff_freq = 50.0f;       // 侧力截止频率 (Hz)
 
 LowPassFilter beta_filter(beta_cutoff_freq, SAMPLE_TIME);
 LowPassFilter gyro_filter(gyro_cutoff_freq, SAMPLE_TIME);
-LowPassFilter yaw_filter(yaw_cutoff_freq, SAMPLE_TIME);
-LowPassFilter brake_filter(brake_cutoff_freq, SAMPLE_TIME);
+LowPassFilter accel_filter(accel_cutoff_freq, SAMPLE_TIME);
 
 // ==================== 可调参数（将存入EEPROM）====================
 // 这些全局变量将在加载EEPROM后被赋值
 uint16_t right_lim_inf = 1600;   // 右输出最小脉冲宽度（微秒）
 uint16_t right_lim_sup = 1800;   // 右输出最大脉冲宽度（微秒）
-uint16_t left_lim_inf = 1200;     // 左输出最小脉冲宽度（微秒）
+uint16_t left_lim_inf = 1200;    // 左输出最小脉冲宽度（微秒）
 uint16_t left_lim_sup = 1400;    // 左输出最大脉冲宽度（微秒）
-float encoder_calibration = 0.0f;  // 编码器角度校准量（度）
-float gyro_calibration = 0.0f;       // 陀螺仪角速度校准量（度/秒）
-float Cn_beta = 6.0f;                 // 角度反馈增益
-float Cn_damper = 1.0f;               // 阻尼增益
+float encoder_calibration = 0.0f;// 编码器角度校准量（度）
+float gyro_calibration = 0.0f;   // 陀螺仪角速度校准量（度/秒）
+float Cn_beta = 5.0f;            // 角度反馈增益
+float Cn_damper = 1.0f;          // 阻尼增益
+float Cn_y = 1.0f;               // 侧力补偿
 
 // 固定参数
 float Yaw_gain = 1.0f;                 // 摇杆增益
@@ -67,6 +68,7 @@ struct SystemParams {
     float gyro_calibration;
     float Cn_beta;
     float Cn_damper;
+    float Cn_y;
 } __attribute__((packed));
 
 // 配置结构体（包含魔法数）
@@ -84,7 +86,8 @@ const char* param_names[] = {
     "encoder_calibration",
     "gyro_calibration",
     "Cn_beta",
-    "Cn_damper"
+    "Cn_damper",
+    "Cn_y"
 };
 
 struct ParamRange {
@@ -100,7 +103,8 @@ const ParamRange param_ranges[] = {
     {-360.0, 360.0},     // encoder_calibration
     {-10.0, 10.0},       // gyro_calibration
     {-50.0, 50.0},       // Cn_beta
-    {-50.0, 50.0}        // Cn_damper
+    {-50.0, 50.0},       // Cn_damper
+    {-50.0, 50.0}        // Cn_y
 };
 const int NUM_PARAMS = sizeof(param_names) / sizeof(char*);
 
@@ -112,8 +116,9 @@ const SystemParams DEFAULT_PARAMS = {
     1400,   // left_lim_sup
     0.0f, // encoder_calibration
     0.0f,    // gyro_calibration
-    6.0f,    // Cn_beta
-    1.0f     // Cn_damper
+    5.0f,    // Cn_beta
+    1.0f,    // Cn_damper
+    1.0f     //Cn_y
 };
 
 // 串口命令相关
@@ -124,6 +129,7 @@ uint8_t serial_index = 0;
 // ==================== 函数声明 ====================
 float readEncoderAngle(float calibration);
 float readGyroRate(float calibration);
+float readAccelY();
 void readPWMInputs(float& Yaw, float& Brake);
 void calculateOutputs(float Yaw, float Brake, float Beta, float Yaw_Rate, 
                      float Yaw_gain, float Cn_beta, float Cn_damper,
@@ -204,22 +210,24 @@ void loop() {
   
   // 读取陀螺仪原始角速度（Yaw_Rate）
   float Yaw_Rate_raw = readGyroRate(gyro_calibration);
+
+    // 读取陀螺仪原始侧力(Accel_y)
+  float Accel_y_raw = readAccelY();
   
-  // 读取PWM原始输入（Yaw和Brake）
-  float Yaw_raw = 0.0f, Brake_raw = 0.0f;
-  readPWMInputs(Yaw_raw, Brake_raw);
+  // 读取PWM输入（Yaw和Brake）
+  float Yaw = 0.0f, Brake = 0.0f;
+  readPWMInputs(Yaw, Brake);
   
   // 应用低通滤波
   float Beta = beta_filter.update(Beta_raw);
   float Yaw_Rate = gyro_filter.update(Yaw_Rate_raw);
-  float Yaw = Yaw_raw;  // Yaw输入暂不过滤（保留原程序注释状态）
-  float Brake = brake_filter.update(Brake_raw);
+  float Accel_y = accel_filter.update(Accel_y_raw);
   
   // 计算输出值
   static float OUT_right = 0.0f;
   static float OUT_left = 0.0f;
-  calculateOutputs(Yaw, Brake, Beta, Yaw_Rate, 
-                  Yaw_gain, Cn_beta, Cn_damper,
+  calculateOutputs(Yaw, Brake, Beta, Yaw_Rate, Accel_y, 
+                  Yaw_gain, Cn_beta, Cn_damper, Cn_y, 
                   OUT_right, OUT_left);
   
   // 设置PWM输出（使用当前全局限幅参数）
@@ -235,9 +243,8 @@ void loop() {
 
   // 仅当报告启用时打印调试信息（每50ms）
   if (report_enabled && (current_time - last_print_time >= 50)) {
-    printDebugInfo(Beta_raw, Beta, Yaw_Rate_raw, Yaw_Rate,
-                   Yaw_raw, Yaw, Brake_raw, Brake,
-                   OUT_right, OUT_left);
+    printDebugInfo(Beta_raw, Beta, Yaw_Rate_raw, Yaw_Rate, Accel_y_raw, Accel_y, 
+                   Yaw, Brake, OUT_right, OUT_left);
     last_print_time = current_time;
   }
 }
@@ -265,6 +272,15 @@ float readGyroRate(float calibration) {
   return 0.0f;
 }
 
+float readAccelY() {
+  if (imu.read_sensors()) {
+    float accel_y = imu.get_accel_x();
+    return accel_y;
+  }
+  Serial.println("MPU6500 Error");
+  return 0.0f;
+}
+
 void readPWMInputs(float& Yaw, float& Brake) {
   if (pwmIO.isCH1_Valid()) {
     uint16_t pulse_width1 = pwmIO.getCH1_IN();
@@ -283,16 +299,19 @@ void readPWMInputs(float& Yaw, float& Brake) {
   }
 }
 
-void calculateOutputs(float Yaw, float Brake, float Beta, float Yaw_Rate, 
-                     float Yaw_gain, float Cn_beta, float Cn_damper,
+void calculateOutputs(float Yaw, float Brake, float Beta, float Yaw_Rate, float Accel_y, 
+                     float Yaw_gain, float Cn_beta, float Cn_damper, float Cn_y, 
                      float& OUT_right, float& OUT_left) {
   float Beta_norm = Beta / 180.0f;
   Beta_norm = constrain(Beta_norm, -1.0f, 1.0f);
   
   float Yaw_Rate_norm = Yaw_Rate / 180.0f;
   Yaw_Rate_norm = constrain(Yaw_Rate_norm, -1.0f, 1.0f);
+
+  float Accel_y_norm = Accel_y / 2.0f;
+  Accel_y_norm = constrain(Accel_y_norm, -1.0f, 1.0f);
   
-  float control_term = - Yaw * Yaw_gain - Beta_norm * Cn_beta + Yaw_Rate_norm * Cn_damper;
+  float control_term = - Yaw * Yaw_gain - Beta_norm * Cn_beta + Yaw_Rate_norm * Cn_damper + Accel_y_norm * Cn_y;
   float control_clamped = constrain(control_term, -1.0f, 1.0f);
   
   float brake_clamped = constrain(Brake, 0.0f, 1.0f);
@@ -321,8 +340,8 @@ float normalizeAngle(float angle_deg) {
   return angle_deg;
 }
 
-void printDebugInfo(float Beta_raw, float Beta_filtered, float Yaw_Rate_raw, float Yaw_Rate_filtered,
-                    float Yaw_raw, float Yaw_filtered, float Brake_raw, float Brake_filtered,
+void printDebugInfo(float Beta_raw, float Beta_filtered, float Yaw_Rate_raw, float Yaw_Rate_filtered, float Accel_y_raw, float Accel_y_filtered, 
+                    float Yaw, float Brake,
                     float OUT_right, float OUT_left) {
   Serial.print("Beta: ");
   Serial.print(Beta_raw, 1);
@@ -333,14 +352,15 @@ void printDebugInfo(float Beta_raw, float Beta_filtered, float Yaw_Rate_raw, flo
   Serial.print("(");
   Serial.print(Yaw_Rate_filtered, 2);
   Serial.print(") | Yaw: ");
-  Serial.print(Yaw_raw, 3);
+  Serial.print(") | Accel_y: ");
+  Serial.print(Accel_y_raw, 2);
   Serial.print("(");
-  Serial.print(Yaw_filtered, 3);
-  Serial.print(") | Brake: ");
-  Serial.print(Brake_raw, 3);
-  Serial.print("(");
-  Serial.print(Brake_filtered, 3);
-  Serial.print(") | R_OUT: ");
+  Serial.print(Accel_y_filtered, 2);
+  Serial.print(") | Yaw: ");
+  Serial.print(Yaw, 3);
+  Serial.print(" | Brake: ");
+  Serial.print(Brake, 3);
+  Serial.print("R_OUT: ");
   Serial.print(OUT_right, 3);
   Serial.print(" | L_OUT: ");
   Serial.print(OUT_left, 3);
@@ -365,6 +385,7 @@ void loadParamsFromEEPROM() {
     if (config.params.gyro_calibration < param_ranges[5].min || config.params.gyro_calibration > param_ranges[5].max) valid = false;
     if (config.params.Cn_beta < param_ranges[6].min || config.params.Cn_beta > param_ranges[6].max) valid = false;
     if (config.params.Cn_damper < param_ranges[7].min || config.params.Cn_damper > param_ranges[7].max) valid = false;
+    if (config.params.Cn_y < param_ranges[8].min || config.params.Cn_y > param_ranges[8].max) valid = false;
     
     if (valid) {
       right_lim_inf = config.params.right_lim_inf;
@@ -375,6 +396,7 @@ void loadParamsFromEEPROM() {
       gyro_calibration = config.params.gyro_calibration;
       Cn_beta = config.params.Cn_beta;
       Cn_damper = config.params.Cn_damper;
+      Cn_y = config.params.Cn_y;
       
       Serial.println("Parameters loaded from EEPROM");
       return;
@@ -394,6 +416,7 @@ void loadParamsFromEEPROM() {
   gyro_calibration = DEFAULT_PARAMS.gyro_calibration;
   Cn_beta = DEFAULT_PARAMS.Cn_beta;
   Cn_damper = DEFAULT_PARAMS.Cn_damper;
+  Cn_y = DEFAULT_PARAMS.Cn_y;
   
   saveParamsToEEPROM();
 }
@@ -410,6 +433,7 @@ void saveParamsToEEPROM() {
   config.params.gyro_calibration = gyro_calibration;
   config.params.Cn_beta = Cn_beta;
   config.params.Cn_damper = Cn_damper;
+  config.params.Cn_y = Cn_y;
   
   EEPROM.put(0, config);
   Serial.println("Parameters saved to EEPROM");
@@ -466,6 +490,7 @@ void processSerialCommand() {
             case 5: val = gyro_calibration; break;
             case 6: val = Cn_beta; break;
             case 7: val = Cn_damper; break;
+            case 8: val = Cn_y; break;
             default: val = 0;
           }
           Serial.print(param_names[i]);
@@ -506,6 +531,7 @@ void processSerialCommand() {
               case 5: gyro_calibration = new_value; break;
               case 6: Cn_beta = new_value; break;
               case 7: Cn_damper = new_value; break;
+              case 8: Cn_y = new_value; break;
             }
             
             // 保存到EEPROM
@@ -554,6 +580,7 @@ void printAllParams() {
       case 5: val = gyro_calibration; break;
       case 6: val = Cn_beta; break;
       case 7: val = Cn_damper; break;
+      case 8: val = Cn_y; break;
       default: val = 0;
     }
     Serial.print("  ");
